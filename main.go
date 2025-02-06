@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"github.com/gorilla/websocket"
+	"github.com/redis/go-redis/v9"
 	"log"
 	"math/big"
 	"net/http"
@@ -27,6 +29,11 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		return true // Allows connections from any origin
 	},
+}
+
+func authorize(w http.ResponseWriter, r *http.Request) {
+	// First, check if the request payload is valid
+
 }
 
 // Handles incoming WebSocket connections
@@ -53,6 +60,22 @@ func handleConnection(w http.ResponseWriter, r *http.Request) {
 
 		// Log received message
 		fmt.Println("Received message:", string(p))
+		var passCode = generatePasscode(12)
+
+		var ctx = context.Background()
+		rdb := redis.NewClient(&redis.Options{
+			Addr:     "redis-14291.c10.us-east-1-4.ec2.redns.redis-cloud.com:14291",
+			Password: "rc3GxT3V1kb2QFJnHGpAE1bg3ODJL92l", // no password set
+			DB:       0,                                  // use default DB
+		})
+
+		err = rdb.Set(ctx, "passcode", passCode, 0).Err()
+		if err != nil {
+			print(err)
+		} else {
+			fmt.Println("Passcode generated: ", passCode)
+		}
+
 		var participant = "John Doe is in this call..."
 		participantbyte := []byte(participant)
 		// Echo message back
