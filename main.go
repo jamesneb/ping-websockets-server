@@ -2,27 +2,16 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
+	"github.com/go-chi/render"
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
 	"log"
-	"math/big"
 	"net/http"
+	"net/url"
+	"websocket-server/auth/auth_utilities"
+	"websocket-server/auth/constants"
 )
-
-func generatePasscode(length int) string {
-	const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	passcode := make([]byte, length)
-	for i := range passcode {
-		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
-		if err != nil {
-			panic(err)
-		}
-		passcode[i] = charset[n.Int64()]
-	}
-	return string(passcode)
-}
 
 // Upgrader to handle WebSocket connections
 var upgrader = websocket.Upgrader{
@@ -31,8 +20,57 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+// authorize handles the first step in OAuth 2.0: Authorization Request
 func authorize(w http.ResponseWriter, r *http.Request) {
-	// First, check if the request payload is valid
+	// Decode the incoming OAuth request payload
+	var payload auth_utilities.OauthPayload
+	if err := render.DecodeJSON(r.Body, &payload); err != nil {
+		http.Error(w, "Invalid request payload", http.StatusBadRequest)
+		return
+	}
+
+	// Validate the OAuth request
+	if !auth_utilities.IsValidOauthPayload(&payload) {
+		http.Error(w, "Invalid request parameters", http.StatusBadRequest)
+		return
+	}
+
+	// Check if the user is logged in
+	sessionCookie, err := r.Cookie("session_id")
+	var sessionID string
+	if err == nil {
+		sessionID = sessionCookie.Value
+	}
+	authResult := auth_utilities.GetSession(sessionID)
+	loggedIn, message := authResult.Result()
+	if loggedIn {
+		// User is logged in → Generate authorization code
+		authCode := auth_utilities.GenerateAuthCode()
+		err := auth_utilities.SaveAuthCode(authCode, payload.ClientID, message)
+
+		if err != nil {
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		// Redirect user to client with auth code
+		redirectURL, _ := url.Parse(payload.RedirectURI)
+		params := url.Values{}
+		params.Add("code", authCode)
+		params.Add("state", payload.State)
+		redirectURL.RawQuery = params.Encode()
+
+		http.Redirect(w, r, redirectURL.String(), http.StatusFound)
+	} else {
+		// User is not logged in → Redirect to login page
+		loginURL, _ := url.Parse(constants.LoginURL)
+		params := url.Values{}
+		params.Add("redirect_uri", payload.RedirectURI)
+		params.Add("state", payload.State)
+		loginURL.RawQuery = params.Encode()
+		http.Redirect(w, r, loginURL.String(), http.StatusFound)
+		return
+	}
 
 }
 
@@ -60,7 +98,7 @@ func handleConnection(w http.ResponseWriter, r *http.Request) {
 
 		// Log received message
 		fmt.Println("Received message:", string(p))
-		var passCode = generatePasscode(12)
+		var passCode = auth_utilities.GeneratePasscode(12)
 
 		var ctx = context.Background()
 		rdb := redis.NewClient(&redis.Options{
