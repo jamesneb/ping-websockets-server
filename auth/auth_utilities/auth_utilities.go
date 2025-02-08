@@ -16,6 +16,7 @@ import (
 type GetSessionResult interface {
 	Result() (bool, string)
 }
+
 type SessionResult struct {
 	message  string
 	loggedIn bool
@@ -34,61 +35,87 @@ type OauthPayload struct {
 	ResponseType  string `json:"response_type"`
 }
 
-var rDB *redis.Client
-
-func InitRedis() {
-	rDB = redis.NewClient(&redis.Options{Addr: constants.RedisAddr, Password: constants.RedisPasswd, DB: 0})
-
+type SignupPayload struct {
+	Username  string `json:"username"`
+	FirstName string `json:"firstName"`
+	LastName  string `json:"lastName"`
+	Email     string `json:"email"`
+	Password  string `json:"password"`
 }
 
-func CheckRedisConnection() error {
+type AuthClientStore struct {
+	ACS *redis.Client
+}
+
+func NewAuthStore(acs *redis.Client) *AuthClientStore {
+	if acs == nil {
+		acs = redis.NewClient(&redis.Options{
+			Addr:     constants.RedisAddr,
+			Password: constants.RedisPasswd,
+			DB:       0,
+		})
+	}
+	return &AuthClientStore{ACS: acs}
+}
+
+func (a *AuthClientStore) CheckRedisConnection() error {
 	ctx := context.Background()
-	_, err := rDB.Ping(ctx).Result()
+	_, err := a.ACS.Ping(ctx).Result()
 	return err
 }
 
-func SetSession(userID string, sessionID string, expiry time.Duration) {
+func (a *AuthClientStore) SetSession(userID string, sessionID string, expiry time.Duration) {
 	ctx := context.Background()
-	rDB.Set(ctx, sessionID, userID, expiry)
+	a.ACS.Set(ctx, sessionID, userID, expiry)
 }
 
-func GetSession(sessionID string) GetSessionResult {
+func (a *AuthClientStore) GetSession(sessionID string) GetSessionResult {
 	ctx := context.Background()
-	userID, err := rDB.Get(ctx, "session:"+sessionID).Result()
-	if errors.Is(err, redis.Nil) {
-		return SessionResult{userID, true}
-	} else {
-		return SessionResult{err.Error(), false}
+	userID, err := a.ACS.Get(ctx, sessionID).Result()
+
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			// Key doesn't exist
+			return SessionResult{message: "", loggedIn: false}
+		}
+		// Other errors
+		return SessionResult{message: err.Error(), loggedIn: false}
 	}
 
+	// Success case - session exists
+	return SessionResult{message: userID, loggedIn: true}
 }
 
-func CreateSession(userID string, expiry time.Duration) string {
+func (a *AuthClientStore) CreateSession(userID string, expiry time.Duration) string {
 	sessionID := GenerateSessionID()
-	SetSession(userID, sessionID, expiry)
+	a.SetSession(userID, sessionID, expiry)
 	return sessionID
 }
 
 func GenerateSessionID() string {
 	return uuid.New().String()
-
 }
 
-func DeleteSession(sessionID string) error {
+func (a *AuthClientStore) DeleteSession(sessionID string) error {
 	ctx := context.Background()
-	return rDB.Del(ctx, "session:"+sessionID).Err()
+	return a.ACS.Del(ctx, "session:"+sessionID).Err()
 }
 
-func CheckUserLoginStatus(sessionID string) bool {
-	result := GetSession(sessionID)
-	loggedIn, _ := result.Result()
-	if loggedIn {
-		return true
-	} else {
-		return false
+func (a *AuthClientStore) SaveAuthCode(authCode string, clientID string, userID string) error {
+	ctx := context.Background()
+	err := a.ACS.Set(ctx, "authcode:"+authCode, clientID+userID, time.Minute*5).Err()
+	if err != nil {
+		return err
 	}
-
+	return nil
 }
+
+func CheckUserLoginStatus(sessionID string, store *AuthClientStore) bool {
+	result := store.GetSession(sessionID)
+	loggedIn, _ := result.Result()
+	return loggedIn
+}
+
 func GenerateAuthCode() string {
 	bytes := make([]byte, 32)
 	_, err := rand.Read(bytes)
@@ -96,15 +123,6 @@ func GenerateAuthCode() string {
 		log.Fatal(err)
 	}
 	return hex.EncodeToString(bytes)
-}
-
-func SaveAuthCode(authCode string, clientID string, userID string) error {
-	ctx := context.Background()
-	err := rDB.Set(ctx, "auth_code:"+authCode, clientID+userID, time.Minute*5).Err()
-	if err != nil {
-		return err
-	}
-	return nil
 }
 
 func IsValidOauthPayload(payload *OauthPayload) bool {
