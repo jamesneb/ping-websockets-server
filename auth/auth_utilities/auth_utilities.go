@@ -3,13 +3,20 @@ package auth_utilities
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha1"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"io"
 	"log"
 	"math/big"
+	"net/http"
+	"regexp"
+	"strings"
 	"time"
+	"unicode"
 	"websocket-server/auth/constants"
 )
 
@@ -41,6 +48,13 @@ type SignupPayload struct {
 	LastName  string `json:"lastName"`
 	Email     string `json:"email"`
 	Password  string `json:"password"`
+}
+
+type PasswordValidationResult struct {
+	IsValid     bool     `json:"is_valid"`
+	Strength    float64  `json:"strength"`
+	BreachCount int      `json:"breach_count"`
+	Suggestions []string `json:"suggestions"`
 }
 
 type AuthClientStore struct {
@@ -161,4 +175,174 @@ func GeneratePasscode(length int) string {
 		passcode[i] = charset[n.Int64()]
 	}
 	return string(passcode)
+}
+
+func IsValidSignupPayload(payload *SignupPayload) bool {
+	if payload == nil {
+		return false
+	}
+	if payload.Username == "" {
+		return false
+	}
+	if payload.FirstName == "" {
+		return false
+	}
+	if payload.LastName == "" {
+		return false
+	}
+	if payload.Email == "" {
+		return false
+	}
+	if payload.Password == "" {
+		return false
+	}
+
+	// Validate password strength
+	result := ValidatePassword(payload.Password)
+	emailRegex := `^[a-zA-Z0-9.!#$%&'*+/=?^_` + "`" + `{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$`
+	re, err := regexp.Compile(emailRegex)
+	if err != nil {
+		result.IsValid = false
+	}
+
+	// Check if the email matches the pattern
+	if !re.MatchString(payload.Email) {
+		result.IsValid = false
+	}
+
+	// Additional validation for email length
+	if len(payload.Email) > 254 {
+		result.IsValid = false
+	}
+
+	// Additional validation for local part length
+	parts := strings.Split(payload.Email, "@")
+	if len(parts[0]) > 64 {
+		result.IsValid = false
+	}
+	return result.IsValid
+}
+
+func ValidatePassword(password string) PasswordValidationResult {
+	result := PasswordValidationResult{
+		IsValid:     true,
+		Strength:    0.0,
+		Suggestions: []string{},
+	}
+
+	// Check minimum length
+	if len(password) < 12 {
+		result.IsValid = false
+		result.Suggestions = append(result.Suggestions, "Password must be at least 12 characters long")
+	}
+
+	var (
+		hasUpper   bool
+		hasLower   bool
+		hasNumber  bool
+		hasSpecial bool
+	)
+
+	for _, char := range password {
+		switch {
+		case unicode.IsUpper(char):
+			hasUpper = true
+		case unicode.IsLower(char):
+			hasLower = true
+		case unicode.IsNumber(char):
+			hasNumber = true
+		case unicode.IsPunct(char) || unicode.IsSymbol(char):
+			hasSpecial = true
+		}
+	}
+
+	// Build suggestions based on missing criteria
+	if !hasUpper {
+		result.IsValid = false
+		result.Suggestions = append(result.Suggestions, "Add uppercase letters")
+	}
+	if !hasLower {
+		result.IsValid = false
+		result.Suggestions = append(result.Suggestions, "Add lowercase letters")
+	}
+	if !hasNumber {
+		result.IsValid = false
+		result.Suggestions = append(result.Suggestions, "Add numbers")
+	}
+	if !hasSpecial {
+		result.IsValid = false
+		result.Suggestions = append(result.Suggestions, "Add special characters")
+	}
+
+	// Calculate strength score (0.0 to 1.0)
+	strengthFactors := 0
+	if hasUpper {
+		strengthFactors++
+	}
+	if hasLower {
+		strengthFactors++
+	}
+	if hasNumber {
+		strengthFactors++
+	}
+	if hasSpecial {
+		strengthFactors++
+	}
+	if len(password) >= 16 {
+		strengthFactors++
+	}
+	result.Strength = float64(strengthFactors) / 5.0
+
+	// Check if password has been compromised
+	breachCount, err := checkHaveIBeenPwned(password)
+	if err == nil && breachCount > 0 {
+		result.IsValid = false
+		result.BreachCount = breachCount
+		result.Suggestions = append(result.Suggestions,
+			fmt.Sprintf("This password appears in %d known data breaches. Please choose a different password", breachCount))
+	}
+
+	// Check if email is a valid regex
+
+	return result
+}
+
+func checkHaveIBeenPwned(password string) (int, error) {
+	// Generate SHA-1 hash of password
+	h := sha1.New()
+	h.Write([]byte(password))
+	hash := strings.ToUpper(hex.EncodeToString(h.Sum(nil)))
+
+	// Get the first 5 characters of the hash
+	prefix := hash[:5]
+	suffix := hash[5:]
+
+	// Query the API
+	resp, err := http.Get("https://api.pwnedpasswords.com/range/" + prefix)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	// Read the response
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, err
+	}
+
+	// Check if our hash suffix exists in the response
+	lines := strings.Split(string(body), "\r\n")
+	for _, line := range lines {
+		parts := strings.Split(line, ":")
+		if len(parts) != 2 {
+			continue
+		}
+		if strings.EqualFold(parts[0], suffix) {
+			count := 0
+			fmt.Sscanf(parts[1], "%d", &count)
+			return count, nil
+		}
+	}
+
+	return 0, nil
 }

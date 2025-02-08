@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/go-chi/render"
 	"github.com/gorilla/websocket"
+	"github.com/jackc/pgx/v5"
 	"log"
 	"net/http"
 	"net/url"
@@ -33,7 +34,7 @@ func signUp(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request parameters", http.StatusBadRequest)
 
 	}
-	dbpool, err := pgxpool.New(context.Background(), "postgresql://localhost:5432/ping")
+	dbpool, _ := pgxpool.New(context.Background(), "postgresql://localhost:5432/ping")
 	defer dbpool.Close()
 
   dbpool.AfterConnect = func(ctx context.Context, conn *pgx.Conn)	error {
@@ -42,8 +43,8 @@ func signUp(w http.ResponseWriter, r *http.Request) {
   		return err
   	}
   	defer tx.Rollback(context.Background())
-    statement := fmt.Sprintf("INSERT INTO users(username, password, email, firstname, lastname) VALUES (%s, %s, %s, %s, %s) ", *payload.username, *payload.password, *payload.email, *payload.firstName, *payload.lastName  )
-  	_, err = tx.Exec(context.Background(), "INSERT INTO users(username, password, email, firstname, lastname) VALUES ()")
+    statement := fmt.Sprintf("INSERT INTO users(username, password, email, firstname, lastname) VALUES (%s, %s, %s, %s, %s) ", *payload.Username, *payload.Password, *payload.Email, *payload.FirstName, *payload.LastName  )
+  	_, err = tx.Exec(context.Background(), statement )
   	
 
 }
@@ -178,7 +179,7 @@ func main() {
 	http.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
 		authorize(w, r, authStore)
 	})
-
+	http.HandleFunc("/signup", func(w http.ResponseWriter, r *http.Request) { signUp(w, r)})
 	serverAddress := ":8080"
 	fmt.Println("WebSocket server listening on ws://localhost" + serverAddress)
 

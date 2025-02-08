@@ -155,3 +155,65 @@ func TestGetSession(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+func TestSignupPayloadWithUnencryptedPassword_Invalid(t *testing.T) {
+	signupPayload := SignupPayload{Username: "jamesneb", Password: "Jams15ss1!", FirstName: "James", LastName: "Nebeker", Email: "jamesnebekerwork@gmail.com"}
+
+	if IsValidSignupPayload(&signupPayload) {
+		t.Errorf("Passwords must be encrypted")
+	}
+}
+
+func TestSignupPayloadWithNoUsername_Invalid(t *testing.T) {
+	signupPayload := SignupPayload{Username: "", Password: "Fdjsalk123!%", FirstName: "James", LastName: "Nebeker", Email: "jamesnebekerwork@gmail.com"}
+
+	if IsValidSignupPayload(&signupPayload) {
+		t.Errorf("Username is required")
+	}
+}
+
+func TestSignupPayloadWithNoPassword_Invalid(t *testing.T) {
+	signupPayload := SignupPayload{Username: "jamesneb", Password: "", FirstName: "James", LastName: "Nebeker", Email: "jamesnebekerwork@gmail.com"}
+
+	if IsValidSignupPayload(&signupPayload) {
+		t.Errorf("Password is required")
+	}
+}
+
+func TestSignupPayloadWithNoFirstName_Invalid(t *testing.T) {
+	signupPayload := SignupPayload{Username: "jamesneb", Password: "Fdjsalk123!%", FirstName: "", LastName: "Nebeker", Email: "jamesnebekerwork@gmail.com"}
+	if IsValidSignupPayload(&signupPayload) {
+		t.Errorf("First name is required")
+	}
+}
+
+func TestSignupPayloadWithNoLastName_Invalid(t *testing.T) {
+	signupPayload := SignupPayload{Username: "jamesneb", Password: "Fdjsalk123!%", FirstName: "James", LastName: "", Email: "jamesnebekerwork@gmail.com"}
+	if IsValidSignupPayload(&signupPayload) {
+		t.Errorf("Last name is required")
+
+	}
+}
+
+func TestSignupPayloadWithNoEmail_Invalid(t *testing.T) {
+	signupPayload := SignupPayload{Username: "jamesneb", Password: "Fdjsalk123!%", FirstName: "James", LastName: "Nebeker", Email: ""}
+	if IsValidSignupPayload(&signupPayload) {
+		t.Errorf("Email is required")
+	}
+
+}
+
+func TestSignupPayloadWithInvalidEmail_Invalid(t *testing.T) {
+	signupPayload := SignupPayload{Username: "jamesneb", Password: "Fdjsalk123!%", FirstName: "James", LastName: "Nebeker", Email: "jamesnebekerworkgmail.com"}
+	if IsValidSignupPayload(&signupPayload) {
+		t.Errorf("Email is invalid")
+
+	}
+}
+
+func TestSignupPayloadWithAllValidFields_Valid(t *testing.T) {
+	signupPayload := SignupPayload{Username: "jamesneb", Password: "Fdjsalk123!%", FirstName: "James", LastName: "Nebeker", Email: "jamesnebekerwork@gmail.com"}
+	if !IsValidSignupPayload(&signupPayload) {
+		t.Errorf("All fields are valid")
+	}
+}
