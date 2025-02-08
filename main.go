@@ -5,13 +5,12 @@ import (
 	"fmt"
 	"github.com/go-chi/render"
 	"github.com/gorilla/websocket"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"log"
 	"net/http"
 	"net/url"
 	"websocket-server/auth/auth_utilities"
 	"websocket-server/auth/constants"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var (
@@ -32,21 +31,57 @@ func signUp(w http.ResponseWriter, r *http.Request) {
 
 	if !auth_utilities.IsValidSignupPayload(&payload) {
 		http.Error(w, "Invalid request parameters", http.StatusBadRequest)
-
+		return
 	}
-	dbpool, _ := pgxpool.New(context.Background(), "postgresql://localhost:5432/ping")
+
+	dbpool, err := pgxpool.New(context.Background(), "postgresql://localhost:5432/ping")
+	if err != nil {
+		log.Printf("Unable to connect to database: %v\n", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
 	defer dbpool.Close()
 
-  dbpool.AfterConnect = func(ctx context.Context, conn *pgx.Conn)	error {
-  	tx, err := conn.Begin(context.Background())
-  	if err != nil {
-  		return err
-  	}
-  	defer tx.Rollback(context.Background())
-    statement := fmt.Sprintf("INSERT INTO users(username, password, email, firstname, lastname) VALUES (%s, %s, %s, %s, %s) ", *payload.Username, *payload.Password, *payload.Email, *payload.FirstName, *payload.LastName  )
-  	_, err = tx.Exec(context.Background(), statement )
-  	
+	// Start a transaction
+	tx, err := dbpool.Begin(context.Background())
+	if err != nil {
+		log.Printf("Unable to start transaction: %v\n", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(context.Background()) // Will be ignored if tx.Commit() is called
 
+	// Use parameterized query to prevent SQL injection
+	sql := `
+		INSERT INTO user (username, password, email, firstname, lastname) 
+		VALUES ($1, $2, $3, $4, $5)
+	`
+
+	_, err = tx.Exec(context.Background(), sql,
+		payload.Username, // These are now direct field accesses, not pointer dereferences
+		payload.Password,
+		payload.Email,
+		payload.FirstName,
+		payload.LastName,
+	)
+
+	if err != nil {
+		log.Printf("Failed to insert user: %v\n", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Commit the transaction
+	err = tx.Commit(context.Background())
+	if err != nil {
+		log.Printf("Failed to commit transaction: %v\n", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	// Return success response
+	w.WriteHeader(http.StatusCreated)
+	render.JSON(w, r, map[string]string{"message": "User created successfully"})
 }
 
 // authorize handles the first step in OAuth 2.0: Authorization Request
@@ -179,7 +214,7 @@ func main() {
 	http.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
 		authorize(w, r, authStore)
 	})
-	http.HandleFunc("/signup", func(w http.ResponseWriter, r *http.Request) { signUp(w, r)})
+	http.HandleFunc("/signup", func(w http.ResponseWriter, r *http.Request) { signUp(w, r) })
 	serverAddress := ":8080"
 	fmt.Println("WebSocket server listening on ws://localhost" + serverAddress)
 
