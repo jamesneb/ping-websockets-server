@@ -41,7 +41,20 @@ func signUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer dbpool.Close()
-
+	sql := "SELECT * from USER where USERNAME = $1"
+	tx, err := dbpool.Begin(context.Background())
+	defer tx.Rollback(context.Background())
+	
+	if err != nil {
+		http.Errpr(w, "User already created", err)
+		return 
+	}
+	_, err = tx.Exec(context.Background(), sql, payload.Username,)
+	if err == nil {
+o		log.Printf("Tried to sign up for existing user.")
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
 	// Start a transaction
 	tx, err := dbpool.Begin(context.Background())
 	if err != nil {
