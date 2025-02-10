@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"websocket-server/auth/auth_utilities"
 	"websocket-server/auth/constants"
+	 "golang.org/x/crypto/bcrypt"
 )
 
 var (
@@ -21,82 +22,86 @@ var (
 	}
 	authStore *auth_utilities.AuthClientStore
 )
-
 func signUp(w http.ResponseWriter, r *http.Request) {
-	var payload auth_utilities.SignupPayload
-	if err := render.DecodeJSON(r.Body, &payload); err != nil {
-		http.Error(w, "Invalid request payload", http.StatusBadRequest)
-		return
-	}
-
-	if !auth_utilities.IsValidSignupPayload(&payload) {
-		http.Error(w, "Invalid request parameters", http.StatusBadRequest)
-		return
-	}
-
-	dbpool, err := pgxpool.New(context.Background(), "postgresql://localhost:5432/ping")
-	if err != nil {
-		log.Printf("Unable to connect to database: %v\n", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-	defer dbpool.Close()
-	sql := "SELECT * from USER where USERNAME = $1"
-	tx, err := dbpool.Begin(context.Background())
-	defer tx.Rollback(context.Background())
+    var payload auth_utilities.SignupPayload
+    if err := render.DecodeJSON(r.Body, &payload); err != nil {
+        http.Error(w, "Invalid request payload", http.StatusBadRequest)
 	
-	if err != nil {
-		http.Errpr(w, "User already created", err)
-		return 
-	}
-	_, err = tx.Exec(context.Background(), sql, payload.Username,)
-	if err == nil {
-o		log.Printf("Tried to sign up for existing user.")
-		http.Error(w, "Bad Request", http.StatusBadRequest)
-		return
-	}
-	// Start a transaction
-	tx, err := dbpool.Begin(context.Background())
-	if err != nil {
-		log.Printf("Unable to start transaction: %v\n", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-	defer tx.Rollback(context.Background()) // Will be ignored if tx.Commit() is called
+        return
+    }
 
-	// Use parameterized query to prevent SQL injection
-	sql := `
-		INSERT INTO user (username, password, email, firstname, lastname) 
-		VALUES ($1, $2, $3, $4, $5)
-	`
+    if !auth_utilities.IsValidSignupPayload(&payload) {
+        http.Error(w, "Invalid request parameters", http.StatusBadRequest)
+        return
+    }
 
-	_, err = tx.Exec(context.Background(), sql,
-		payload.Username, // These are now direct field accesses, not pointer dereferences
-		payload.Password,
-		payload.Email,
-		payload.FirstName,
-		payload.LastName,
-	)
+    dbpool, err := pgxpool.New(context.Background(), "postgresql://localhost:5432/ping")
+    if err != nil {
+        log.Printf("Unable to connect to database: %v\n", err)
+        http.Error(w, "Internal server error", http.StatusInternalServerError)
+        return
+    }
+    defer dbpool.Close()
 
-	if err != nil {
-		log.Printf("Failed to insert user: %v\n", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
+    // Check if user already exists
+    checkSQL := "SELECT * from USER where USERNAME = $1"
+    tx, err := dbpool.Begin(context.Background())
+    if err != nil {
+        log.Printf("Unable to start transaction: %v\n", err)
+        http.Error(w, "Internal server error", http.StatusInternalServerError)
+        return
+    }
+    defer tx.Rollback(context.Background())
+    
+    row := tx.QueryRow(context.Background(), checkSQL, payload.Username)
+    var exists bool
+    if err := row.Scan(&exists); err == nil {
+        log.Printf("Tried to sign up for existing user.")
+        http.Error(w, "User already exists", http.StatusBadRequest)
+        return
+    }
+    
+    password, err := bcrypt.GenerateFromPassword([]byte (payload.Password), bcrypt.DefaultCost)
+    
+    if err == nil {
+	    http.Error(w, "Internal Server Error", http.StatusInternalServerError) 
+	    log.Printf("Failed to generate password hash: %v\n", err)
+    }
 
-	// Commit the transaction
-	err = tx.Commit(context.Background())
-	if err != nil {
-		log.Printf("Failed to commit transaction: %v\n", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
 
-	// Return success response
-	w.WriteHeader(http.StatusCreated)
-	render.JSON(w, r, map[string]string{"message": "User created successfully"})
+	
+    // Insert new user
+    insertSQL := `
+        INSERT INTO user (username, password, email, firstname, lastname) 
+        VALUES ($1, $2, $3, $4, $5)
+    `
+
+    _, err = tx.Exec(context.Background(), insertSQL,
+        payload.Username,
+        password,
+        payload.Email,
+        payload.FirstName,
+        payload.LastName,
+    )
+
+    if err != nil {
+        log.Printf("Failed to insert user: %v\n", err)
+        http.Error(w, "Internal server error", http.StatusInternalServerError)
+        return
+    }
+
+    // Commit the transaction
+    err = tx.Commit(context.Background())
+    if err != nil {
+        log.Printf("Failed to commit transaction: %v\n", err)
+        http.Error(w, "Internal server error", http.StatusInternalServerError)
+        return
+    }
+
+    // Return success response
+    w.WriteHeader(http.StatusCreated)
+    render.JSON(w, r, map[string]string{"message": "User created successfully"})
 }
-
 // authorize handles the first step in OAuth 2.0: Authorization Request
 func authorize(w http.ResponseWriter, r *http.Request, store *auth_utilities.AuthClientStore) {
 	var payload auth_utilities.OauthPayload
