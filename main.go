@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"websocket-server/auth/auth_utilities"
 	"websocket-server/auth/constants"
-
+        "time"
 	"github.com/go-chi/render"
 	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -24,17 +24,23 @@ var (
 	authStore *auth_utilities.AuthClientStore
 )
 
-func login(w http.ResponseWriter, r *http.Request) {
+func login(w http.ResponseWriter, r *http.Request, store *auth_utilities.AuthClientStore) string {
 	var payload auth_utilities.LoginPayload
 	if err := render.DecodeJSON(r.Body, &payload); err != nil {
 		http.Error(w, "Invalid request payload", http.StatusBadRequest)
 
-		return
+		return ""
 	}
 
 	if !auth_utilities.LoginValid(payload) {
 		http.Error(w, "Invalid login", http.StatusBadRequest)
 	}
+	
+	sessionID := store.CreateSession(payload.Username, time.Duration(24))
+	w.WriteHeader(http.StatusCreated)
+	render.JSON(w, r, map[string]string{"sessionID": sessionID})
+	return ""
+
 }
 
 func signUp(w http.ResponseWriter, r *http.Request) {
@@ -246,6 +252,12 @@ func main() {
 	http.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
 		authorize(w, r, authStore)
 	})
+
+	http.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		login(w, r, authStore)
+
+	})
+
 	http.HandleFunc("/signup", func(w http.ResponseWriter, r *http.Request) { signUp(w, r) })
 	serverAddress := ":8080"
 	fmt.Println("WebSocket server listening on ws://localhost" + serverAddress)

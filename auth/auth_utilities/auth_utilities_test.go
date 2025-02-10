@@ -295,3 +295,5 @@ func TestLoginCredentials_Valid(t *testing.T) {
 		t.Errorf("Login should be valid")
 	}
 }
+
+
