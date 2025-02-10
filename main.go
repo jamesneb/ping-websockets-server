@@ -22,6 +22,20 @@ var (
 	}
 	authStore *auth_utilities.AuthClientStore
 )
+
+func login(w http.ResponseWriter, r *http.Request) {
+	var payload auth_utilities.LoginPayload 
+	if err:= render.DecodeJSON(r.Body, &payload); err != nil {
+		http.Error(w, "Invalid request payload", http.StatusBadRequest)
+
+		return 
+	}
+
+	if !auth_utilities.LoginValid(payload) {
+		http.Error(w, "Invalid login", http.StatusBadRequest)
+	}
+}
+
 func signUp(w http.ResponseWriter, r *http.Request) {
     var payload auth_utilities.SignupPayload
     if err := render.DecodeJSON(r.Body, &payload); err != nil {

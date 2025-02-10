@@ -2,9 +2,10 @@ package auth_utilities
 
 import (
 	"fmt"
-	"github.com/go-redis/redismock/v9"
 	"testing"
 	"time"
+
+	"github.com/go-redis/redismock/v9"
 )
 
 func TestPayloadWithoutClientIDIsInvalid(t *testing.T) {
@@ -215,5 +216,80 @@ func TestSignupPayloadWithAllValidFields_Valid(t *testing.T) {
 	signupPayload := SignupPayload{Username: "jamesneb", Password: "Fdjsalk123!%", FirstName: "James", LastName: "Nebeker", Email: "jamesnebekerwork@gmail.com"}
 	if !IsValidSignupPayload(&signupPayload) {
 		t.Errorf("All fields are valid")
+	}
+}
+
+func TestEmptyLogin_Invalid(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload LoginPayload
+	}{
+		{
+			name: "empty username",
+			payload: LoginPayload{
+				Username: "",
+				Password: "password123",
+			},
+		},
+		{
+			name: "empty password",
+			payload: LoginPayload{ // fixed typo in authauth_utilities
+				Username: "username123", // added missing comma
+				Password: "",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if LoginValid(tt.payload) {
+				t.Errorf("LoginPayload is Valid, want Invalid for test: %s", tt.name) // fixed string formatting
+			}
+		})
+	}
+}
+
+func TestLoginCredentials_Invalid(t *testing.T) {
+
+	tests := []struct {
+		name string
+		payload LoginPayload 
+	}{
+		{
+			name: "user not exists", 
+			payload: LoginPayload {
+				Username: "DOESNTEXISTINPING", 
+				Password: "Jams15ss1!", 
+			},
+		},
+		{
+			name: "password not correct",
+			payload: LoginPayload{
+				Username: "jnebeker",
+				Password: "poopoo",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if LoginValid(tt.payload) {
+				t.Errorf("LoginPayload is Valid, want invalid for test: %s", tt.name)
+			}
+		})
+	}
+}
+
+func TestLoginCredentials_Valid(t *testing.T) {
+
+	payload := LoginPayload {
+		Username: "jnebeker",
+		Password: "Jams15ss1!",
+	}
+
+	if LoginValid(payload) {
+
+	} else {
+		t.Errorf("Login should be valid")
 	}
 }

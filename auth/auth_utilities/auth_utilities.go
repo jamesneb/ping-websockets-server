@@ -7,8 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/google/uuid"
-	"github.com/redis/go-redis/v9"
 	"io"
 	"log"
 	"math/big"
@@ -18,6 +16,11 @@ import (
 	"time"
 	"unicode"
 	"websocket-server/auth/constants"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 type GetSessionResult interface {
@@ -31,6 +34,20 @@ type SessionResult struct {
 
 func (r SessionResult) Result() (bool, string) {
 	return r.loggedIn, r.message
+}
+
+type LoginPayload struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type User struct {
+	FirstName string
+	LastName  string
+	Email     string
+	Username  string
+	Password  string
+	// Add other fields if needed
 }
 
 type OauthPayload struct {
@@ -345,4 +362,52 @@ func checkHaveIBeenPwned(password string) (int, error) {
 	}
 
 	return 0, nil
+}
+
+func LoginValid(payload LoginPayload) bool {
+	if payload.Password == "" || payload.Username == "" {
+		return false
+	}
+
+	dbpool, err := pgxpool.New(context.Background(), "postgresql://localhost:5432/ping")
+	if err != nil {
+		fmt.Println("Database connection error:", err)
+		return false
+	}
+	defer dbpool.Close()
+
+	ctx := context.Background()
+	tx, err := dbpool.Begin(ctx)
+	if err != nil {
+		fmt.Println("Transaction error:", err)
+		return false
+	}
+	defer tx.Rollback(ctx)
+
+	var storedPassword string
+	checkSQL := `SELECT password FROM users WHERE username = $1`
+
+	err = tx.QueryRow(ctx, checkSQL, payload.Username).Scan(&storedPassword)
+
+	if err == pgx.ErrNoRows {
+		fmt.Println("User not found")
+		return false
+	}
+
+	if err != nil {
+		fmt.Println("Query error:", err)
+		return false
+	}
+
+	if storedPassword != payload.Password {
+		fmt.Println("Password mismatch")
+		return false
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		fmt.Println("Commit error:", err)
+		return false
+	}
+
+	return true
 }
