@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type GetSessionResult interface {
@@ -385,8 +386,9 @@ func LoginValid(payload LoginPayload) bool {
 	defer tx.Rollback(ctx)
 
 	var storedPassword string
+	fmt.Println(payload.Username)
 	checkSQL := `SELECT password FROM users WHERE username = $1`
-
+	fmt.Println(checkSQL)
 	err = tx.QueryRow(ctx, checkSQL, payload.Username).Scan(&storedPassword)
 
 	if err == pgx.ErrNoRows {
@@ -398,8 +400,16 @@ func LoginValid(payload LoginPayload) bool {
 		fmt.Println("Query error:", err)
 		return false
 	}
-
-	if storedPassword != payload.Password {
+	fmt.Println(storedPassword)
+	fmt.Println(payload.Password)
+	hashed, err := bcrypt.GenerateFromPassword([]byte(payload.Password), bcrypt.DefaultCost)
+	if err != nil {
+		fmt.Println("Hash error:", err)
+		return false
+	}
+	fmt.Println(string(hashed))
+	fmt.Println(string(storedPassword))
+	if nil != bcrypt.CompareHashAndPassword([]byte(storedPassword), []byte(payload.Password)) {
 		fmt.Println("Password mismatch")
 		return false
 	}

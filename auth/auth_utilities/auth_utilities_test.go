@@ -252,14 +252,14 @@ func TestEmptyLogin_Invalid(t *testing.T) {
 func TestLoginCredentials_Invalid(t *testing.T) {
 
 	tests := []struct {
-		name string
-		payload LoginPayload 
+		name    string
+		payload LoginPayload
 	}{
 		{
-			name: "user not exists", 
-			payload: LoginPayload {
-				Username: "DOESNTEXISTINPING", 
-				Password: "Jams15ss1!", 
+			name: "user not exists",
+			payload: LoginPayload{
+				Username: "DOESNTEXISTINPING",
+				Password: "Jams15ss1!",
 			},
 		},
 		{
@@ -282,14 +282,16 @@ func TestLoginCredentials_Invalid(t *testing.T) {
 
 func TestLoginCredentials_Valid(t *testing.T) {
 
-	payload := LoginPayload {
+	payload := LoginPayload{
 		Username: "jnebeker",
-		Password: "Jams15ss1!",
+		Password: "$2a$10$bCW6xuO4A7mpVmw5Uqb7k.w8smFxUBuDy9dMAQXZFeOMS1bQqwPga",
 	}
 
 	if LoginValid(payload) {
 
 	} else {
+		fmt.Println("TESTING")
+		fmt.Println(LoginValid(payload))
 		t.Errorf("Login should be valid")
 	}
 }
