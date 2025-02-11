@@ -2,9 +2,12 @@ package auth_utilities
 
 import (
 	"context"
+	"encoding/base64"
 	"crypto/rand"
 	"crypto/sha1"
+	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,7 +19,8 @@ import (
 	"time"
 	"unicode"
 	"websocket-server/auth/constants"
-
+	"os"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,6 +30,26 @@ import (
 
 type GetSessionResult interface {
 	Result() (bool, string)
+}
+
+type TokenRequest struct {
+	GrantType    string `json:"grant_type"`
+	Code         string `json:"code"`
+	RedirectURI  string `json:"redirect_uri"`
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+}
+
+type TokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    int    `json:"expires_in"`
+	RefreshToken string `json:"refresh_token"`
+}
+
+type ErrorResponse struct {
+	Error            string `json:"error"`
+	ErrorDescription string `json:"error_description"`
 }
 
 type SessionResult struct {
@@ -148,13 +172,42 @@ func CheckUserLoginStatus(sessionID string, store *AuthClientStore) bool {
 	return loggedIn
 }
 
-func GenerateAuthCode() string {
-	bytes := make([]byte, 32)
-	_, err := rand.Read(bytes)
-	if err != nil {
-		log.Fatal(err)
-	}
-	return hex.EncodeToString(bytes)
+func GenerateAuthCode(userID: string, redirectURI: string) string {
+	var clientID = "ping_app"
+	    if userID == "" || clientID == "" || redirectURI == "" {
+        return "", fmt.Errorf("all parameters are required")
+    }
+
+    // Generate random authorization code
+    randomBytes := make([]byte, 32)
+    if _, err := rand.Read(randomBytes); err != nil {
+        return "", fmt.Errorf("failed to generate random bytes: %v", err)
+    }
+    authCode := base64.RawURLEncoding.EncodeToString(randomBytes)
+
+    ctx := context.Background()
+    dbpool, err := pgxpool.New(ctx, "postgresql://localhost:5432/ping")
+    if err != nil {
+        return "", fmt.Errorf("error connecting to db: %v", err)
+    }
+    defer dbpool.Close()
+
+    // Store the authorization code
+    _, err = dbpool.Exec(ctx, `
+        INSERT INTO authorization_codes 
+        (code, user_id, client_id, redirect_uri, expires_at, is_used)
+        VALUES ($1, $2, $3, $4, $5, false)`,
+        authCode,
+        userID,
+        clientID,
+        redirectURI,
+        time.Now().Add(time.Minute * 10), // Auth codes typically expire quickly, e.g., 10 minutes
+    )
+    if err != nil {
+        return "", fmt.Errorf("failed to store authorization code: %v", err)
+    }
+
+    return authCode, nil
 }
 
 func IsValidOauthPayload(payload *OauthPayload) bool {
@@ -420,4 +473,350 @@ func LoginValid(payload LoginPayload) bool {
 	}
 
 	return true
+}
+
+type TokenRequest struct {
+	GrantType    string `json:"grant_type"`
+	Code         string `json:"code"`
+	RedirectURI  string `json:"redirect_uri"`
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+}
+
+type TokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    int    `json:"expires_in"`
+	RefreshToken string `json:"refresh_token"`
+}
+
+type ErrorResponse struct {
+	Error            string `json:"error"`
+	ErrorDescription string `json:"error_description"`
+}
+
+func HandleTokenExchange(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		sendError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Only POST method is allowed")
+		return
+	}
+
+	var req TokenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		sendError(w, http.StatusBadRequest, "invalid_request", "Invalid request body")
+		return
+	}
+
+	// Verify grant type
+	if req.GrantType != "authorization_code" {
+		sendError(w, http.StatusBadRequest, "unsupported_grant_type", "Only authorization code grant type is supported")
+		return
+	}
+
+	// Verify client credentials
+	if err := verifyClientCredentials(req.ClientID, req.ClientSecret); err != nil {
+		sendError(w, http.StatusUnauthorized, "invalid_client", "Invalid client credentials")
+		return
+	}
+
+	// Validate authorization code
+	authCode, err := validateAuthorizationCode(req.Code)
+	if err != nil {
+		sendError(w, http.StatusBadRequest, "invalid_grant", "Invalid or expired authorization code")
+		return
+	}
+
+	// Verify redirect URI matches
+	if authCode.RedirectURI != req.RedirectURI {
+		sendError(w, http.StatusBadRequest, "invalid_grant", "Redirect URI mismatch")
+		return
+	}
+
+	// Generate tokens
+	accessToken, err := generateAccessToken(authCode.UserID, req.ClientID)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "server_error", "Error generating access token")
+		return
+	}
+
+	refreshToken, err := generateRefreshToken(authCode.UserID, req.ClientID)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "server_error", "Error generating refresh token")
+		return
+	}
+
+	// Save tokens
+	if err := saveTokens(accessToken, refreshToken, authCode.UserID, req.ClientID); err != nil {
+		sendError(w, http.StatusInternalServerError, "server_error", "Error saving tokens")
+		return
+	}
+
+	// Invalidate used authorization code
+	if err := invalidateAuthorizationCode(req.Code); err != nil {
+		// Log error but don't return it to client
+		// Consider implications of code being potentially reusable
+		logger.Error("Failed to invalidate authorization code", "error", err)
+	}
+
+	// Send successful response
+	response := TokenResponse{
+		AccessToken:  accessToken,
+		TokenType:    "Bearer",
+		ExpiresIn:    3600, // 1 hour
+		RefreshToken: refreshToken,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func sendError(w http.ResponseWriter, status int, error string, description string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(ErrorResponse{
+		Error:            error,
+		ErrorDescription: description,
+	})
+}
+
+// AuthCode represents stored authorization code data
+type AuthCode struct {
+	Code        string
+	UserID      string
+	ClientID    string
+	RedirectURI string
+	ExpiresAt   time.Time
+}
+
+func verifyClientCredentials(clientID, clientSecret string) error {
+	if clientID == "" || clientSecret == "" {
+		return fmt.Errorf("empty credentials")
+	}
+
+	ctx := context.Background()
+	dbpool, err := pgxpool.New(ctx, "postgresql://localhost:5432/ping")
+	if err != nil {
+		return fmt.Errorf("error connecting to db: %v", err)
+	}
+	defer dbpool.Close()
+
+	var storedSecret string
+	err = dbpool.QueryRow(ctx,
+		"SELECT secret FROM oauth_clients WHERE client_id = $1",
+		clientID).Scan(&storedSecret)
+
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return fmt.Errorf("invalid client credentials")
+		}
+		return fmt.Errorf("database error: %v", err)
+	}
+
+	// Compare secrets using constant time comparison
+	if subtle.ConstantTimeCompare([]byte(clientSecret), []byte(storedSecret)) != 1 {
+		return fmt.Errorf("invalid client credentials")
+	}
+
+	return nil
+}
+func validateAuthorizationCode(code string) (*AuthCode, error) {
+	func validateAuthorizationCode(code string) (*AuthCode, error) {
+   if code == "" {
+        return nil, fmt.Errorf("empty authorization code")
+    }
+
+    ctx := context.Background()
+    dbpool, err := pgxpool.New(ctx, "postgresql://localhost:5432/ping")
+    if err != nil {
+        return nil, fmt.Errorf("error connecting to db: %v", err)
+    }
+    defer dbpool.Close()
+
+    var authCode AuthCode
+    err = dbpool.QueryRow(ctx, `
+        SELECT code, user_id, client_id, redirect_uri, expires_at
+        FROM authorization_codes
+        WHERE code = $1 AND expires_at > NOW() AND is_used = false`,
+        code).Scan(
+            &authCode.Code,
+            &authCode.UserID,
+            &authCode.ClientID,
+            &authCode.RedirectURI,
+            &authCode.ExpiresAt,
+    )
+
+    if err != nil {
+        if err == pgx.ErrNoRows {
+            return nil, fmt.Errorf("invalid or expired authorization code")
+        }
+        return nil, fmt.Errorf("database error: %v", err)
+    }
+
+    // Check if code has expired (double check even though we did in SQL)
+    if time.Now().After(authCode.ExpiresAt) {
+        return nil, fmt.Errorf("authorization code has expired")
+    }
+
+    return &authCode, nil
+}
+}
+
+func generateAccessToken(userID, clientID string) (string, error) {
+    if userID == "" || clientID == "" {
+        return "", fmt.Errorf("userID and clientID are required")
+    }
+
+    // Create the claims
+    claims := jwt.MapClaims{
+        "user_id": userID,
+        "client_id": clientID,
+        "exp": time.Now().Add(time.Hour * 1).Unix(),  // Token expires in 1 hour
+        "iat": time.Now().Unix(),                     // Issued at time
+        "typ": "access_token",
+    }
+
+    // Create the token with the claims
+    token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+    // Get the secret key from environment variable
+    secretKey := []byte(os.Getenv("JWT_SECRET_KEY"))
+    if len(secretKey) == 0 {
+        return "", fmt.Errorf("JWT secret key not configured")
+    }
+
+    // Sign and get the complete encoded token as a string
+    tokenString, err := token.SignedString(secretKey)
+    if err != nil {
+        return "", fmt.Errorf("failed to sign token: %v", err)
+    }
+
+    return tokenString, nil
+}
+
+func generateRefreshToken(userID, clientID string) (string, error) {
+	  if userID == "" || clientID == "" {
+        return "", fmt.Errorf("userID and clientID are required")
+    }
+
+    // Generate 32 random bytes
+    randomBytes := make([]byte, 32)
+    if _, err := rand.Read(randomBytes); err != nil {
+        return "", fmt.Errorf("failed to generate random bytes: %v", err)
+    }
+
+    // Convert to base64URL string (removes padding and special chars)
+    refreshToken := base64.RawURLEncoding.EncodeToString(randomBytes)
+
+    ctx := context.Background()
+    dbpool, err := pgxpool.New(ctx, "postgresql://localhost:5432/ping")
+    if err != nil {
+        return "", fmt.Errorf("error connecting to db: %v", err)
+    }
+    defer dbpool.Close()
+
+    // Store refresh token in database
+    _, err = dbpool.Exec(ctx, `
+        INSERT INTO refresh_tokens 
+        (token, user_id, client_id, expires_at, is_revoked)
+        VALUES ($1, $2, $3, $4, false)`,
+        refreshToken,
+        userID,
+        clientID,
+        time.Now().Add(time.Hour * 24 * 30), // 30 days expiration
+    )
+    if err != nil {
+        return "", fmt.Errorf("failed to store refresh token: %v", err)
+    }
+
+    return refreshToken, nil
+}
+
+
+func saveTokens(accessToken, refreshToken, userID, clientID string) error {
+	 if accessToken == "" || refreshToken == "" || userID == "" || clientID == "" {
+        return fmt.Errorf("all parameters are required")
+    }
+
+    ctx := context.Background()
+    dbpool, err := pgxpool.New(ctx, "postgresql://localhost:5432/ping")
+    if err != nil {
+        return fmt.Errorf("error connecting to db: %v", err)
+    }
+    defer dbpool.Close()
+
+    // Begin transaction
+    tx, err := dbpool.Begin(ctx)
+    if err != nil {
+        return fmt.Errorf("error starting transaction: %v", err)
+    }
+    // Defer rollback in case anything fails
+    defer tx.Rollback(ctx)
+
+    // Save access token
+    _, err = tx.Exec(ctx, `
+        INSERT INTO access_tokens 
+        (token, user_id, client_id, expires_at)
+        VALUES ($1, $2, $3, $4)`,
+        accessToken,
+        userID,
+        clientID,
+        time.Now().Add(time.Hour), // 1 hour expiration
+    )
+    if err != nil {
+        return fmt.Errorf("failed to save access token: %v", err)
+    }
+
+    // Save refresh token
+    _, err = tx.Exec(ctx, `
+        INSERT INTO refresh_tokens 
+        (token, user_id, client_id, expires_at, is_revoked)
+        VALUES ($1, $2, $3, $4, false)
+        ON CONFLICT (token) DO NOTHING`, // In case it was already saved by generateRefreshToken
+        refreshToken,
+        userID,
+        clientID,
+        time.Now().Add(time.Hour * 24 * 30), // 30 days expiration
+    )
+    if err != nil {
+        return fmt.Errorf("failed to save refresh token: %v", err)
+    }
+
+    // Commit transaction
+    if err = tx.Commit(ctx); err != nil {
+        return fmt.Errorf("error committing transaction: %v", err)
+    }
+
+    return nil
+}
+
+func invalidateAuthorizationCode(code string) error {
+    if code == "" {
+        return fmt.Errorf("authorization code is required")
+    }
+
+    ctx := context.Background()
+    dbpool, err := pgxpool.New(ctx, "postgresql://localhost:5432/ping"))
+    if err != nil {
+        return fmt.Errorf("error connecting to db: %v", err)
+    }
+    defer dbpool.Close()
+
+    // Update the authorization code to mark it as used
+    result, err := dbpool.Exec(ctx, `
+        UPDATE authorization_codes 
+        SET is_used = true 
+        WHERE code = $1 AND is_used = false`,
+        code,
+    )
+    if err != nil {
+        return fmt.Errorf("failed to invalidate authorization code: %v", err)
+    }
+
+    // Check if any row was actually updated
+    rowsAffected := result.RowsAffected()
+    if rowsAffected == 0 {
+        return fmt.Errorf("authorization code not found or already used")
+    }
+
+    return nil
 }
