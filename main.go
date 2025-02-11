@@ -146,7 +146,7 @@ func authorize(w http.ResponseWriter, r *http.Request, store *auth_utilities.Aut
 	loggedIn, userID := authResult.Result()
 
 	if loggedIn {
-		authCode := auth_utilities.GenerateAuthCode()
+		authCode,_ := auth_utilities.GenerateAuthCode("ping_app", userID)
 		err := store.SaveAuthCode(authCode, payload.ClientID, userID)
 
 		if err != nil {

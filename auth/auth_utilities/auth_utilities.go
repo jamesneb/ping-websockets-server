@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math/big"
 	"net/http"
 	"regexp"
@@ -172,7 +171,7 @@ func CheckUserLoginStatus(sessionID string, store *AuthClientStore) bool {
 	return loggedIn
 }
 
-func GenerateAuthCode(userID: string, redirectURI: string) string {
+func GenerateAuthCode(userID string, redirectURI string) (string, error) {
 	var clientID = "ping_app"
 	    if userID == "" || clientID == "" || redirectURI == "" {
         return "", fmt.Errorf("all parameters are required")
@@ -475,25 +474,7 @@ func LoginValid(payload LoginPayload) bool {
 	return true
 }
 
-type TokenRequest struct {
-	GrantType    string `json:"grant_type"`
-	Code         string `json:"code"`
-	RedirectURI  string `json:"redirect_uri"`
-	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret"`
-}
 
-type TokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	TokenType    string `json:"token_type"`
-	ExpiresIn    int    `json:"expires_in"`
-	RefreshToken string `json:"refresh_token"`
-}
-
-type ErrorResponse struct {
-	Error            string `json:"error"`
-	ErrorDescription string `json:"error_description"`
-}
 
 func HandleTokenExchange(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -555,7 +536,7 @@ func HandleTokenExchange(w http.ResponseWriter, r *http.Request) {
 	if err := invalidateAuthorizationCode(req.Code); err != nil {
 		// Log error but don't return it to client
 		// Consider implications of code being potentially reusable
-		logger.Error("Failed to invalidate authorization code", "error", err)
+		fmt.Errorf("Failed to invalidate authorization code", "error", err)
 	}
 
 	// Send successful response
@@ -620,7 +601,6 @@ func verifyClientCredentials(clientID, clientSecret string) error {
 	return nil
 }
 func validateAuthorizationCode(code string) (*AuthCode, error) {
-	func validateAuthorizationCode(code string) (*AuthCode, error) {
    if code == "" {
         return nil, fmt.Errorf("empty authorization code")
     }
@@ -658,7 +638,7 @@ func validateAuthorizationCode(code string) (*AuthCode, error) {
     }
 
     return &authCode, nil
-}
+
 }
 
 func generateAccessToken(userID, clientID string) (string, error) {
@@ -795,7 +775,7 @@ func invalidateAuthorizationCode(code string) error {
     }
 
     ctx := context.Background()
-    dbpool, err := pgxpool.New(ctx, "postgresql://localhost:5432/ping"))
+    dbpool, err := pgxpool.New(ctx, "postgresql://localhost:5432/ping")
     if err != nil {
         return fmt.Errorf("error connecting to db: %v", err)
     }
