@@ -6,9 +6,10 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"time"
 	"websocket-server/auth/auth_utilities"
 	"websocket-server/auth/constants"
-        "time"
+
 	"github.com/go-chi/render"
 	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -35,76 +36,105 @@ func login(w http.ResponseWriter, r *http.Request, store *auth_utilities.AuthCli
 	if !auth_utilities.LoginValid(payload) {
 		http.Error(w, "Invalid login", http.StatusBadRequest)
 	}
-	
+
 	sessionID := store.CreateSession(payload.Username, time.Duration(24))
 	w.WriteHeader(http.StatusCreated)
 	render.JSON(w, r, map[string]string{"sessionID": sessionID})
 	return ""
 
 }
-
 func signUp(w http.ResponseWriter, r *http.Request) {
 	var payload auth_utilities.SignupPayload
-	if err := render.DecodeJSON(r.Body, &payload); err != nil {
-		http.Error(w, "Invalid request payload", http.StatusBadRequest)
+	fmt.Println("Got request")
 
+	if err := render.DecodeJSON(r.Body, &payload); err != nil {
+		log.Printf("Decode error: %v", err)
+		http.Error(w, "Invalid request payload", http.StatusBadRequest)
 		return
 	}
 
 	if !auth_utilities.IsValidSignupPayload(&payload) {
+		log.Println("Invalid signup payload")
 		http.Error(w, "Invalid request parameters", http.StatusBadRequest)
 		return
 	}
 
 	dbpool, err := pgxpool.New(context.Background(), "postgresql://localhost:5432/ping")
 	if err != nil {
-		log.Printf("Unable to connect to database: %v\n", err)
+		log.Printf("Unable to connect to database: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer dbpool.Close()
 
-	// Check if user already exists
-	checkSQL := "SELECT * from USER where USERNAME = $1"
-	tx, err := dbpool.Begin(context.Background())
+	// Create a connection from the pool
+	conn, err := dbpool.Acquire(context.Background())
 	if err != nil {
-		log.Printf("Unable to start transaction: %v\n", err)
+		log.Printf("Failed to acquire database connection: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer conn.Release()
+
+	// Start a transaction
+	tx, err := conn.Begin(context.Background())
+	if err != nil {
+		log.Printf("Unable to start transaction: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 	defer tx.Rollback(context.Background())
 
-	row := tx.QueryRow(context.Background(), checkSQL, payload.Username)
-	var exists bool
-	if err := row.Scan(&exists); err == nil {
-		log.Printf("Tried to sign up for existing user.")
+	// Check if user exists
+	checkSQL := `SELECT username FROM "users" WHERE username = $1`
+	var existingUsername string
+	log.Printf("Checking user existence for username: %s", payload.Username)
+
+	err = tx.QueryRow(context.Background(), checkSQL, payload.Username).Scan(&existingUsername)
+	log.Printf("User existence check - Raw error: %v", err)
+	log.Printf("Error type: %T", err)
+
+	if err != nil {
+		if err.Error() == "no rows in result set" {
+			log.Println("No existing user found - proceeding with signup")
+			// No existing user found - this is good, continue with signup
+		} else {
+			// Unexpected database error
+			log.Printf("Unexpected error checking user existence: %v", err)
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		// A user was found
+		log.Printf("User already exists: %s", payload.Username)
 		http.Error(w, "User already exists", http.StatusBadRequest)
 		return
 	}
 
-	password, err := bcrypt.GenerateFromPassword([]byte(payload.Password), bcrypt.DefaultCost)
-
-	if err == nil {
+	// Generate password hash
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(payload.Password), bcrypt.DefaultCost)
+	if err != nil {
+		log.Printf("Password hash generation error: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		log.Printf("Failed to generate password hash: %v\n", err)
+		return
 	}
 
 	// Insert new user
 	insertSQL := `
-        INSERT INTO user (username, password, email, firstname, lastname) 
-        VALUES ($1, $2, $3, $4, $5)
-    `
+       INSERT INTO "users" (username, password, email, firstname, lastname) 
+       VALUES ($1, $2, $3, $4, $5)
+   `
 
 	_, err = tx.Exec(context.Background(), insertSQL,
 		payload.Username,
-		password,
+		passwordHash,
 		payload.Email,
 		payload.FirstName,
 		payload.LastName,
 	)
 
 	if err != nil {
-		log.Printf("Failed to insert user: %v\n", err)
+		log.Printf("User insertion error: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -112,7 +142,7 @@ func signUp(w http.ResponseWriter, r *http.Request) {
 	// Commit the transaction
 	err = tx.Commit(context.Background())
 	if err != nil {
-		log.Printf("Failed to commit transaction: %v\n", err)
+		log.Printf("Transaction commit error: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -146,7 +176,7 @@ func authorize(w http.ResponseWriter, r *http.Request, store *auth_utilities.Aut
 	loggedIn, userID := authResult.Result()
 
 	if loggedIn {
-		authCode,_ := auth_utilities.GenerateAuthCode("ping_app", userID)
+		authCode, _ := auth_utilities.GenerateAuthCode("ping_app", userID)
 		err := store.SaveAuthCode(authCode, payload.ClientID, userID)
 
 		if err != nil {
