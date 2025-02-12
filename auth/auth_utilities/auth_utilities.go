@@ -2,53 +2,33 @@ package auth_utilities
 
 import (
 	"context"
-	"encoding/base64"
 	"crypto/rand"
 	"crypto/sha1"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"math/big"
-	"net/http"
-	"regexp"
-	"strings"
-	"time"
-	"unicode"
-	"websocket-server/auth/constants"
-	"os"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
+	"io"
+	"math/big"
+	"net/http"
+	"os"
+	"regexp"
+	"strings"
+	"time"
+	"unicode"
+	"websocket-server/auth/constants"
 )
 
 type GetSessionResult interface {
 	Result() (bool, string)
-}
-
-type TokenRequest struct {
-	GrantType    string `json:"grant_type"`
-	Code         string `json:"code"`
-	RedirectURI  string `json:"redirect_uri"`
-	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret"`
-}
-
-type TokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	TokenType    string `json:"token_type"`
-	ExpiresIn    int    `json:"expires_in"`
-	RefreshToken string `json:"refresh_token"`
-}
-
-type ErrorResponse struct {
-	Error            string `json:"error"`
-	ErrorDescription string `json:"error_description"`
 }
 
 type SessionResult struct {
@@ -173,40 +153,40 @@ func CheckUserLoginStatus(sessionID string, store *AuthClientStore) bool {
 
 func GenerateAuthCode(userID string, redirectURI string) (string, error) {
 	var clientID = "ping_app"
-	    if userID == "" || clientID == "" || redirectURI == "" {
-        return "", fmt.Errorf("all parameters are required")
-    }
+	if userID == "" || clientID == "" || redirectURI == "" {
+		return "", fmt.Errorf("all parameters are required")
+	}
 
-    // Generate random authorization code
-    randomBytes := make([]byte, 32)
-    if _, err := rand.Read(randomBytes); err != nil {
-        return "", fmt.Errorf("failed to generate random bytes: %v", err)
-    }
-    authCode := base64.RawURLEncoding.EncodeToString(randomBytes)
+	// Generate random authorization code
+	randomBytes := make([]byte, 32)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "", fmt.Errorf("failed to generate random bytes: %v", err)
+	}
+	authCode := base64.RawURLEncoding.EncodeToString(randomBytes)
 
-    ctx := context.Background()
-    dbpool, err := pgxpool.New(ctx, "postgresql://localhost:5432/ping")
-    if err != nil {
-        return "", fmt.Errorf("error connecting to db: %v", err)
-    }
-    defer dbpool.Close()
+	ctx := context.Background()
+	dbpool, err := pgxpool.New(ctx, "postgresql://localhost:5432/ping")
+	if err != nil {
+		return "", fmt.Errorf("error connecting to db: %v", err)
+	}
+	defer dbpool.Close()
 
-    // Store the authorization code
-    _, err = dbpool.Exec(ctx, `
+	// Store the authorization code
+	_, err = dbpool.Exec(ctx, `
         INSERT INTO authorization_codes 
         (code, user_id, client_id, redirect_uri, expires_at, is_used)
         VALUES ($1, $2, $3, $4, $5, false)`,
-        authCode,
-        userID,
-        clientID,
-        redirectURI,
-        time.Now().Add(time.Minute * 10), // Auth codes typically expire quickly, e.g., 10 minutes
-    )
-    if err != nil {
-        return "", fmt.Errorf("failed to store authorization code: %v", err)
-    }
+		authCode,
+		userID,
+		clientID,
+		redirectURI,
+		time.Now().Add(time.Minute*10), // Auth codes typically expire quickly, e.g., 10 minutes
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to store authorization code: %v", err)
+	}
 
-    return authCode, nil
+	return authCode, nil
 }
 
 func IsValidOauthPayload(payload *OauthPayload) bool {
@@ -474,7 +454,25 @@ func LoginValid(payload LoginPayload) bool {
 	return true
 }
 
+type TokenRequest struct {
+	GrantType    string `json:"grant_type"`
+	Code         string `json:"code"`
+	RedirectURI  string `json:"redirect_uri"`
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+}
 
+type TokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    int    `json:"expires_in"`
+	RefreshToken string `json:"refresh_token"`
+}
+
+type ErrorResponse struct {
+	Error            string `json:"error"`
+	ErrorDescription string `json:"error_description"`
+}
 
 func HandleTokenExchange(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -601,202 +599,201 @@ func verifyClientCredentials(clientID, clientSecret string) error {
 	return nil
 }
 func validateAuthorizationCode(code string) (*AuthCode, error) {
-   if code == "" {
-        return nil, fmt.Errorf("empty authorization code")
-    }
+	if code == "" {
+		return nil, fmt.Errorf("empty authorization code")
+	}
 
-    ctx := context.Background()
-    dbpool, err := pgxpool.New(ctx, "postgresql://localhost:5432/ping")
-    if err != nil {
-        return nil, fmt.Errorf("error connecting to db: %v", err)
-    }
-    defer dbpool.Close()
+	ctx := context.Background()
+	dbpool, err := pgxpool.New(ctx, "postgresql://localhost:5432/ping")
+	if err != nil {
+		return nil, fmt.Errorf("error connecting to db: %v", err)
+	}
+	defer dbpool.Close()
 
-    var authCode AuthCode
-    err = dbpool.QueryRow(ctx, `
+	var authCode AuthCode
+	err = dbpool.QueryRow(ctx, `
         SELECT code, user_id, client_id, redirect_uri, expires_at
         FROM authorization_codes
         WHERE code = $1 AND expires_at > NOW() AND is_used = false`,
-        code).Scan(
-            &authCode.Code,
-            &authCode.UserID,
-            &authCode.ClientID,
-            &authCode.RedirectURI,
-            &authCode.ExpiresAt,
-    )
+		code).Scan(
+		&authCode.Code,
+		&authCode.UserID,
+		&authCode.ClientID,
+		&authCode.RedirectURI,
+		&authCode.ExpiresAt,
+	)
 
-    if err != nil {
-        if err == pgx.ErrNoRows {
-            return nil, fmt.Errorf("invalid or expired authorization code")
-        }
-        return nil, fmt.Errorf("database error: %v", err)
-    }
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, fmt.Errorf("invalid or expired authorization code")
+		}
+		return nil, fmt.Errorf("database error: %v", err)
+	}
 
-    // Check if code has expired (double check even though we did in SQL)
-    if time.Now().After(authCode.ExpiresAt) {
-        return nil, fmt.Errorf("authorization code has expired")
-    }
+	// Check if code has expired (double check even though we did in SQL)
+	if time.Now().After(authCode.ExpiresAt) {
+		return nil, fmt.Errorf("authorization code has expired")
+	}
 
-    return &authCode, nil
-
+	return &authCode, nil
 }
 
 func generateAccessToken(userID, clientID string) (string, error) {
-    if userID == "" || clientID == "" {
-        return "", fmt.Errorf("userID and clientID are required")
-    }
+	if userID == "" || clientID == "" {
+		return "", fmt.Errorf("userID and clientID are required")
+	}
 
-    // Create the claims
-    claims := jwt.MapClaims{
-        "user_id": userID,
-        "client_id": clientID,
-        "exp": time.Now().Add(time.Hour * 1).Unix(),  // Token expires in 1 hour
-        "iat": time.Now().Unix(),                     // Issued at time
-        "typ": "access_token",
-    }
+	// Create the claims
+	claims := jwt.MapClaims{
+		"user_id":   userID,
+		"client_id": clientID,
+		"exp":       time.Now().Add(time.Hour * 1).Unix(), // Token expires in 1 hour
+		"iat":       time.Now().Unix(),                    // Issued at time
+		"typ":       "access_token",
+	}
 
-    // Create the token with the claims
-    token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	// Create the token with the claims
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 
-    // Get the secret key from environment variable
-    secretKey := []byte(os.Getenv("JWT_SECRET_KEY"))
-    if len(secretKey) == 0 {
-        return "", fmt.Errorf("JWT secret key not configured")
-    }
+	// Get the secret key from environment variable
+	secretKey := []byte(os.Getenv("JWT_SECRET_KEY"))
+	if len(secretKey) == 0 {
+		return "", fmt.Errorf("JWT secret key not configured")
+	}
 
-    // Sign and get the complete encoded token as a string
-    tokenString, err := token.SignedString(secretKey)
-    if err != nil {
-        return "", fmt.Errorf("failed to sign token: %v", err)
-    }
+	// Sign and get the complete encoded token as a string
+	tokenString, err := token.SignedString(secretKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to sign token: %v", err)
+	}
 
-    return tokenString, nil
+	return tokenString, nil
 }
 
 func generateRefreshToken(userID, clientID string) (string, error) {
-	  if userID == "" || clientID == "" {
-        return "", fmt.Errorf("userID and clientID are required")
-    }
+	if userID == "" || clientID == "" {
+		return "", fmt.Errorf("userID and clientID are required")
+	}
 
-    // Generate 32 random bytes
-    randomBytes := make([]byte, 32)
-    if _, err := rand.Read(randomBytes); err != nil {
-        return "", fmt.Errorf("failed to generate random bytes: %v", err)
-    }
+	// Generate 32 random bytes
+	randomBytes := make([]byte, 32)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "", fmt.Errorf("failed to generate random bytes: %v", err)
+	}
 
-    // Convert to base64URL string (removes padding and special chars)
-    refreshToken := base64.RawURLEncoding.EncodeToString(randomBytes)
+	// Convert to base64URL string (removes padding and special chars)
+	refreshToken := base64.RawURLEncoding.EncodeToString(randomBytes)
 
-    ctx := context.Background()
-    dbpool, err := pgxpool.New(ctx, "postgresql://localhost:5432/ping")
-    if err != nil {
-        return "", fmt.Errorf("error connecting to db: %v", err)
-    }
-    defer dbpool.Close()
+	ctx := context.Background()
+	dbpool, err := pgxpool.New(ctx, "postgresql://localhost:5432/ping")
+	if err != nil {
+		return "", fmt.Errorf("error connecting to db: %v", err)
+	}
+	defer dbpool.Close()
 
-    // Store refresh token in database
-    _, err = dbpool.Exec(ctx, `
+	// Store refresh token in database
+	_, err = dbpool.Exec(ctx, `
         INSERT INTO refresh_tokens 
         (token, user_id, client_id, expires_at, is_revoked)
         VALUES ($1, $2, $3, $4, false)`,
-        refreshToken,
-        userID,
-        clientID,
-        time.Now().Add(time.Hour * 24 * 30), // 30 days expiration
-    )
-    if err != nil {
-        return "", fmt.Errorf("failed to store refresh token: %v", err)
-    }
+		refreshToken,
+		userID,
+		clientID,
+		time.Now().Add(time.Hour*24*30), // 30 days expiration
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to store refresh token: %v", err)
+	}
 
-    return refreshToken, nil
+	return refreshToken, nil
 }
 
-
 func saveTokens(accessToken, refreshToken, userID, clientID string) error {
-	 if accessToken == "" || refreshToken == "" || userID == "" || clientID == "" {
-        return fmt.Errorf("all parameters are required")
-    }
+	if accessToken == "" || refreshToken == "" || userID == "" || clientID == "" {
+		return fmt.Errorf("all parameters are required")
+	}
 
-    ctx := context.Background()
-    dbpool, err := pgxpool.New(ctx, "postgresql://localhost:5432/ping")
-    if err != nil {
-        return fmt.Errorf("error connecting to db: %v", err)
-    }
-    defer dbpool.Close()
+	ctx := context.Background()
+	dbpool, err := pgxpool.New(ctx, "postgresql://localhost:5432/ping")
+	if err != nil {
+		return fmt.Errorf("error connecting to db: %v", err)
+	}
+	defer dbpool.Close()
 
-    // Begin transaction
-    tx, err := dbpool.Begin(ctx)
-    if err != nil {
-        return fmt.Errorf("error starting transaction: %v", err)
-    }
-    // Defer rollback in case anything fails
-    defer tx.Rollback(ctx)
+	// Begin transaction
+	tx, err := dbpool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("error starting transaction: %v", err)
+	}
+	// Defer rollback in case anything fails
+	defer tx.Rollback(ctx)
 
-    // Save access token
-    _, err = tx.Exec(ctx, `
+	// Save access token
+	_, err = tx.Exec(ctx, `
         INSERT INTO access_tokens 
         (token, user_id, client_id, expires_at)
         VALUES ($1, $2, $3, $4)`,
-        accessToken,
-        userID,
-        clientID,
-        time.Now().Add(time.Hour), // 1 hour expiration
-    )
-    if err != nil {
-        return fmt.Errorf("failed to save access token: %v", err)
-    }
+		accessToken,
+		userID,
+		clientID,
+		time.Now().Add(time.Hour), // 1 hour expiration
+	)
+	if err != nil {
+		return fmt.Errorf("failed to save access token: %v", err)
+	}
 
-    // Save refresh token
-    _, err = tx.Exec(ctx, `
+	// Save refresh token
+	_, err = tx.Exec(ctx, `
         INSERT INTO refresh_tokens 
         (token, user_id, client_id, expires_at, is_revoked)
         VALUES ($1, $2, $3, $4, false)
         ON CONFLICT (token) DO NOTHING`, // In case it was already saved by generateRefreshToken
-        refreshToken,
-        userID,
-        clientID,
-        time.Now().Add(time.Hour * 24 * 30), // 30 days expiration
-    )
-    if err != nil {
-        return fmt.Errorf("failed to save refresh token: %v", err)
-    }
+		refreshToken,
+		userID,
+		clientID,
+		time.Now().Add(time.Hour*24*30), // 30 days expiration
+	)
+	if err != nil {
+		return fmt.Errorf("failed to save refresh token: %v", err)
+	}
 
-    // Commit transaction
-    if err = tx.Commit(ctx); err != nil {
-        return fmt.Errorf("error committing transaction: %v", err)
-    }
+	// Commit transaction
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("error committing transaction: %v", err)
+	}
 
-    return nil
+	return nil
 }
 
 func invalidateAuthorizationCode(code string) error {
-    if code == "" {
-        return fmt.Errorf("authorization code is required")
-    }
+	if code == "" {
+		return fmt.Errorf("authorization code is required")
+	}
 
-    ctx := context.Background()
-    dbpool, err := pgxpool.New(ctx, "postgresql://localhost:5432/ping")
-    if err != nil {
-        return fmt.Errorf("error connecting to db: %v", err)
-    }
-    defer dbpool.Close()
+	ctx := context.Background()
+	dbpool, err := pgxpool.New(ctx, "postgresql://localhost:5432/ping")
+	if err != nil {
+		return fmt.Errorf("error connecting to db: %v", err)
+	}
+	defer dbpool.Close()
 
-    // Update the authorization code to mark it as used
-    result, err := dbpool.Exec(ctx, `
+	// Update the authorization code to mark it as used
+	result, err := dbpool.Exec(ctx, `
         UPDATE authorization_codes 
         SET is_used = true 
         WHERE code = $1 AND is_used = false`,
-        code,
-    )
-    if err != nil {
-        return fmt.Errorf("failed to invalidate authorization code: %v", err)
-    }
+		code,
+	)
 
-    // Check if any row was actually updated
-    rowsAffected := result.RowsAffected()
-    if rowsAffected == 0 {
-        return fmt.Errorf("authorization code not found or already used")
-    }
+	if err != nil {
+		return fmt.Errorf("failed to invalidate authorization code: %v", err)
+	}
 
-    return nil
+	// Check if any row was actually updated
+	rowsAffected := result.RowsAffected()
+	if rowsAffected == 0 {
+		return fmt.Errorf("authorization code not found or already used")
+	}
+
+	return nil
 }

@@ -3,17 +3,16 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/go-chi/render"
+	"github.com/gorilla/websocket"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/bcrypt"
 	"log"
 	"net/http"
 	"net/url"
 	"time"
 	"websocket-server/auth/auth_utilities"
 	"websocket-server/auth/constants"
-
-	"github.com/go-chi/render"
-	"github.com/gorilla/websocket"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"golang.org/x/crypto/bcrypt"
 )
 
 var (
@@ -43,6 +42,7 @@ func login(w http.ResponseWriter, r *http.Request, store *auth_utilities.AuthCli
 	return ""
 
 }
+
 func signUp(w http.ResponseWriter, r *http.Request) {
 	var payload auth_utilities.SignupPayload
 	fmt.Println("Got request")
